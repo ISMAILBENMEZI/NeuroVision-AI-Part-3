@@ -1,10 +1,47 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
 
-# Virtual environments
-.venv
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual Environment
+.venv/
+venv/
+
+# Environment Variables and Secrets
+.env
+.env.*
+!.env.example
+
+# Airflow
+airflow/airflow.db
+airflow/airflow.db-*
+airflow/logs/
+airflow/*.pid
+airflow/*.log
+airflow/webserver_config.py
+
+# MLflow
+mlflow.db
+mlflow.db-*
+mlartifacts/
+mlruns/
+
+# Dataset
+data/raw/
+data/processed/
+
+# Training Outputs
+runs/
+weights/
+*.pt
+*.onnx
+*.keras
+
+# Jupyter
+.ipynb_checkpoints/
+
+# System
+.DS_Store
+Thumbs.db
