@@ -1,4 +1,6 @@
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -11,12 +13,10 @@ from sklearn.model_selection import train_test_split
 from src.config import (
     DATASET_ID,
     DATASET_DIR,
-    DATA_YAML,
     CLASS_NAMES,
     NUM_CLASSES,
     SUPPORTED_EXTENSIONS,
     RANDOM_STATE,
-    TRAIN_SIZE,
     TEST_SIZE,
 )
 
@@ -43,15 +43,22 @@ def find_source_splits(dataset_path):
         if not matching_paths:
             raise FileNotFoundError(f"{split_name} directory not found.")
 
+        if len(matching_paths) > 1:
+            raise ValueError(
+                f"Multiple {split_name} directories found: {matching_paths}"
+            )
+
         split_directories[split_name.lower()] = matching_paths[0]
 
     return split_directories
 
 
 def validate_image(image_path):
-    image = cv2.imread(str(image_path))
-
-    return image is not None
+    try:
+        image = cv2.imread(str(image_path))
+        return image is not None
+    except cv2.error:
+        return False
 
 
 def validate_annotation(label_path):
@@ -73,7 +80,10 @@ def validate_annotation(label_path):
             if not 0 <= class_id < NUM_CLASSES:
                 return False
 
-            coordinates = np.array([float(value) for value in values[1:]], dtype=float)
+            coordinates = np.array(
+                [float(value) for value in values[1:]],
+                dtype=float,
+            )
 
             if not np.all(np.isfinite(coordinates)):
                 return False
@@ -102,8 +112,11 @@ def collect_samples(split_directory):
             if path.is_dir() and path.name.lower() == class_name.lower()
         ]
 
-        if not class_directories:
-            raise FileNotFoundError(f"Class directory not found: {class_name}")
+        if len(class_directories) != 1:
+            raise ValueError(
+                f"Expected one directory for class {class_name}, "
+                f"found {len(class_directories)}."
+            )
 
         class_directory = class_directories[0]
 
@@ -158,13 +171,21 @@ def split_dataset(train_samples):
     return train_data, test_data
 
 
-def organize_dataset(dataset):
+def organize_dataset(dataset, destination_dir):
     for split_name, samples in dataset.items():
-        images_directory = DATASET_DIR / "images" / split_name
-        labels_directory = DATASET_DIR / "labels" / split_name
+        images_directory = destination_dir / "images" / split_name
 
-        images_directory.mkdir(parents=True, exist_ok=True)
-        labels_directory.mkdir(parents=True, exist_ok=True)
+        labels_directory = destination_dir / "labels" / split_name
+
+        images_directory.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        labels_directory.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
         for index, sample in enumerate(samples):
             image_path = sample["image"]
@@ -179,35 +200,18 @@ def organize_dataset(dataset):
 
             destination_label = labels_directory / f"{new_name}.txt"
 
-            shutil.copy2(image_path, destination_image)
-            shutil.copy2(label_path, destination_label)
+            shutil.copy2(
+                image_path,
+                destination_image,
+            )
+
+            shutil.copy2(
+                label_path,
+                destination_label,
+            )
 
 
-# def organize_dataset(dataset):
-#     if DATASET_DIR.exists():
-#         shutil.rmtree(DATASET_DIR)
-
-#     for split_name, samples in dataset.items():
-#         images_directory = DATASET_DIR / "images" / split_name
-#         labels_directory = DATASET_DIR / "labels" / split_name
-
-#         images_directory.mkdir(parents=True, exist_ok=True)
-#         labels_directory.mkdir(parents=True, exist_ok=True)
-
-#         for index, sample in enumerate(samples):
-#             image_path = sample["image"]
-#             label_path = sample["label"]
-
-#             new_name = f"{sample['class_name']}_{image_path.stem}_{index}"
-
-#             shutil.copy2(
-#                 image_path, images_directory / f"{new_name}{image_path.suffix.lower()}"
-#             )
-
-#             shutil.copy2(label_path, labels_directory / f"{new_name}.txt")
-
-
-def create_data_yaml():
+def create_data_yaml(dataset_dir):
     data = {
         "path": str(DATASET_DIR.resolve()),
         "train": "images/train",
@@ -217,15 +221,84 @@ def create_data_yaml():
         "names": {index: name for index, name in enumerate(CLASS_NAMES)},
     }
 
-    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    yaml_path = dataset_dir / "data.yaml"
 
-    with open(DATA_YAML, "w", encoding="utf-8") as file:
+    with open(yaml_path, "w", encoding="utf-8") as file:
         yaml.safe_dump(
             data,
             file,
             sort_keys=False,
             allow_unicode=True,
         )
+
+
+def validate_processed_dataset(dataset_dir):
+    for split_name in ["train", "val", "test"]:
+        images_directory = dataset_dir / "images" / split_name
+
+        labels_directory = dataset_dir / "labels" / split_name
+
+        if not images_directory.is_dir():
+            raise FileNotFoundError(f"Missing images directory: {images_directory}")
+
+        if not labels_directory.is_dir():
+            raise FileNotFoundError(f"Missing labels directory: {labels_directory}")
+
+        images = [path for path in images_directory.iterdir() if path.is_file()]
+
+        labels = [path for path in labels_directory.iterdir() if path.is_file()]
+
+        if len(images) != len(labels):
+            raise ValueError(
+                f"Image-label mismatch in {split_name}: "
+                f"{len(images)} images, {len(labels)} labels."
+            )
+
+        image_stems = {path.stem for path in images}
+        label_stems = {path.stem for path in labels}
+
+        if image_stems != label_stems:
+            raise ValueError(f"Image-label filenames do not match in {split_name}.")
+
+        print(f"{split_name}: {len(images)} images and {len(labels)} labels")
+
+    yaml_path = dataset_dir / "data.yaml"
+
+    if not yaml_path.is_file():
+        raise FileNotFoundError(f"Dataset configuration not found: {yaml_path}")
+
+    with open(yaml_path, "r", encoding="utf-8") as file:
+        data = yaml.safe_load(file)
+
+    if data["nc"] != NUM_CLASSES:
+        raise ValueError("Invalid number of classes in data.yaml.")
+
+    if len(data["names"]) != NUM_CLASSES:
+        raise ValueError("Invalid class names in data.yaml.")
+
+
+def replace_dataset(staging_dir):
+    backup_dir = DATASET_DIR.with_name(f"{DATASET_DIR.name}.backup")
+
+    if backup_dir.exists():
+        raise FileExistsError(
+            f"Backup already exists: {backup_dir}. "
+            "Preserve it and resolve it before replacing the dataset."
+        )
+
+    old_dataset_exists = DATASET_DIR.exists()
+
+    try:
+        if old_dataset_exists:
+            os.replace(DATASET_DIR, backup_dir)
+
+        os.replace(staging_dir, DATASET_DIR)
+
+    except Exception:
+        if not DATASET_DIR.exists() and backup_dir.exists():
+            os.replace(backup_dir, DATASET_DIR)
+
+        raise
 
 
 def preprocess_dataset():
@@ -245,8 +318,32 @@ def preprocess_dataset():
         "test": test_data,
     }
 
-    organize_dataset(dataset)
+    DATASET_DIR.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    create_data_yaml()
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix="brain_mri_staging_",
+            dir=DATASET_DIR.parent,
+        )
+    )
 
-    return dataset
+    try:
+        organize_dataset(
+            dataset,
+            staging_dir,
+        )
+
+        create_data_yaml(staging_dir)
+
+        validate_processed_dataset(staging_dir)
+
+        replace_dataset(staging_dir)
+
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+
+    return {split_name: len(samples) for split_name, samples in dataset.items()}
